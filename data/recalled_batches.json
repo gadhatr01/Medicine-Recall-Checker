@@ -1,0 +1,57 @@
+[
+  {
+    "medicine_name": "Metformin Hydrochloride Extended-Release Tablets USP, 500 mg",
+    "batch_number": "MX8739A",
+    "aliases": ["Metformin", "Glucophage", "Fortamet"],
+    "manufacturer": "Aurobindo Pharma Limited",
+    "recall_date": "2025-11-20",
+    "recall_reason": "Detection of NDMA (N-Nitrosodimethylamine) impurity above acceptable daily intake limit.",
+    "recalling_agency": "US FDA",
+    "recall_class": "Class II",
+    "recommendation": "Patients should continue taking Metformin until they consult their physician for a replacement."
+  },
+  {
+    "medicine_name": "Valsartan Tablets USP, 160 mg",
+    "batch_number": "V209841",
+    "aliases": ["Valsartan", "Diovan"],
+    "manufacturer": "Aurobindo Pharma USA, Inc.",
+    "recall_date": "2025-03-12",
+    "recall_reason": "Detection of trace amounts of N-nitrosodiethylamine (NDEA) impurity, a probable human carcinogen.",
+    "recalling_agency": "US FDA",
+    "recall_class": "Class II",
+    "recommendation": "Contact your pharmacist or doctor to obtain an alternative before stopping treatment."
+  },
+  {
+    "medicine_name": "Dolo-650 (Paracetamol 650mg)",
+    "batch_number": "DL98762",
+    "aliases": ["Dolo 650", "Paracetamol", "Calpol"],
+    "manufacturer": "Micro Labs Ltd.",
+    "recall_date": "2026-02-14",
+    "recall_reason": "Sub-potency (fails dissolution test, active ingredient does not dissolve within specifications).",
+    "recalling_agency": "CDSCO (India)",
+    "recall_class": "Class II",
+    "recommendation": "Return the medicine to your pharmacy and request a batch replacement."
+  },
+  {
+    "medicine_name": "Pantocid 40 (Pantoprazole 40mg)",
+    "batch_number": "PT4412",
+    "aliases": ["Pantocid", "Pantocid 40", "Pantoprazole"],
+    "manufacturer": "Sun Pharmaceutical Industries Ltd.",
+    "recall_date": "2026-05-18",
+    "recall_reason": "Mislabeled expiry date; packaging issue that does not affect chemical composition.",
+    "recalling_agency": "CDSCO (India)",
+    "recall_class": "Class III",
+    "recommendation": "Monitor expiry dates carefully; consult pharmacist if bought recently."
+  },
+  {
+    "medicine_name": "Atorvastatin Calcium Tablets, 20 mg",
+    "batch_number": "AT20883",
+    "aliases": ["Atorvastatin", "Lipitor"],
+    "manufacturer": "Biocon Limited",
+    "recall_date": "2025-10-05",
+    "recall_reason": "Presence of foreign substance (microscopic glass particles found in production line).",
+    "recalling_agency": "US FDA",
+    "recall_class": "Class I",
+    "recommendation": "Stop using immediately and contact your doctor for a replacement medication."
+  }
+]
