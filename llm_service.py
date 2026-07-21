@@ -268,6 +268,39 @@ def _answer_from_best_db_match(identity: dict, matches: list[dict]) -> dict:
     }
 
 
+def _answer_from_known_safe_db_match(identity: dict, matches: list[dict]) -> dict:
+    best_match = matches[0] if matches else {}
+    medicine_name = (
+        best_match.get("medicine_name")
+        or identity.get("brand_name")
+        or identity.get("generic_name")
+        or "Unknown Medicine"
+    )
+    batch_number = best_match.get("batch_number") or identity.get("batch_number")
+
+    return {
+        "medicine_name": medicine_name,
+        "batch_number": batch_number,
+        "manufacturer": best_match.get("manufacturer") or identity.get("manufacturer"),
+        "is_recalled": False,
+        "recall_date": None,
+        "recall_reason": None,
+        "recalling_agency": best_match.get("recalling_agency") or "Internal Database",
+        "recall_class": None,
+        "recommendation": best_match.get("recommendation")
+        or "No recall action required based on the internal database.",
+        "status_summary": (
+            f"Not Flagged: Batch {batch_number} of {medicine_name} was found in "
+            "the internal database and is marked Not Recalled."
+        ),
+        "general_info": (
+            f"This batch is listed for {best_match.get('manufacturer')}. "
+            "No recall reason or recall date is recorded for it."
+        ),
+        "source": "internal_database",
+    }
+
+
 def _answer_from_vector_matches(identity: dict, matches: list[dict]) -> dict:
     if not ENABLE_LLM_SUMMARY:
         return _answer_from_best_db_match(identity, matches)
@@ -455,8 +488,12 @@ def analyze_medicine(raw_ocr_text: str, manual_batch: str = "", manual_med: str 
 
     matches = search_recalled_db(batch_number=batch, medicine_name=med)
 
-    if matches:
-        result = _answer_from_vector_matches(identity, matches)
+    recalled_matches = [match for match in matches if match.get("is_recalled") is True]
+
+    if recalled_matches:
+        result = _answer_from_vector_matches(identity, recalled_matches)
+    elif matches:
+        result = _answer_from_known_safe_db_match(identity, matches)
     elif ENABLE_WEB_SEARCH:
         try:
             result = _answer_from_web_search(identity)

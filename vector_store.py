@@ -5,6 +5,7 @@ before falling back to a live web search via the LLM.
 """
 
 import json
+import re
 from pathlib import Path
 
 import chromadb
@@ -35,11 +36,48 @@ def _get_client():
 
 
 def _doc_text(entry: dict) -> str:
+    entry = _normalize_entry(entry)
     return (
         f"{entry['medicine_name']} ({', '.join(entry['aliases'])}) - "
         f"Batch: {entry['batch_number']}, Manufacturer: {entry['manufacturer']}. "
-        f"Recall Reason: {entry['recall_reason']}"
+        f"Recall Status: {entry['recall_status']}. Recall Reason: {entry['recall_reason']}"
     )
+
+
+def _clean_batch(batch_number: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (batch_number or "").upper())
+
+
+def _normalize_entry(entry: dict) -> dict:
+    recall_status = entry.get("recall_status") or (
+        "Recalled" if entry.get("is_recalled") else "Not Recalled"
+    )
+    is_recalled = str(recall_status).strip().lower() == "recalled"
+    aliases = entry.get("aliases") or [entry.get("generic_name"), entry.get("composition")]
+
+    return {
+        "medicine_name": entry.get("medicine_name", ""),
+        "batch_number": entry.get("batch_number") or entry.get("batch_no") or "",
+        "aliases": [alias for alias in aliases if alias],
+        "manufacturer": entry.get("manufacturer", ""),
+        "recall_status": recall_status,
+        "is_recalled": is_recalled,
+        "recall_date": entry.get("recall_date") or None,
+        "recall_reason": entry.get("recall_reason") or None,
+        "recalling_agency": entry.get("recalling_agency") or "Internal Database",
+        "recall_class": entry.get("recall_class") or None,
+        "recommendation": entry.get("recommendation")
+        or (
+            "Do not use this batch. Contact a pharmacist or healthcare professional."
+            if is_recalled
+            else "No recall action required based on the internal database."
+        ),
+    }
+
+
+def _load_json_entries() -> list[dict]:
+    with open(DATA_FILE, "r") as f:
+        return [_normalize_entry(entry) for entry in json.load(f)]
 
 
 def init_vector_store(force_reseed: bool = False):
@@ -58,8 +96,7 @@ def init_vector_store(force_reseed: bool = False):
     )
 
     if _collection.count() == 0:
-        with open(DATA_FILE, "r") as f:
-            entries = json.load(f)
+        entries = _load_json_entries()
 
         _collection.add(
             ids=[str(i) for i in range(len(entries))],
@@ -68,12 +105,15 @@ def init_vector_store(force_reseed: bool = False):
                 {
                     "medicine_name": e["medicine_name"],
                     "batch_number": e["batch_number"],
+                    "normalized_batch": _clean_batch(e["batch_number"]),
                     "aliases": json.dumps(e["aliases"]),
                     "manufacturer": e["manufacturer"],
-                    "recall_date": e["recall_date"],
-                    "recall_reason": e["recall_reason"],
+                    "recall_status": e["recall_status"],
+                    "is_recalled": e["is_recalled"],
+                    "recall_date": e["recall_date"] or "",
+                    "recall_reason": e["recall_reason"] or "",
                     "recalling_agency": e["recalling_agency"],
-                    "recall_class": e["recall_class"],
+                    "recall_class": e["recall_class"] or "",
                     "recommendation": e["recommendation"],
                 }
                 for e in entries
@@ -95,13 +135,22 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
     First tries direct exact match (case-insensitive, whitespace stripped) on batch_number.
     If no exact match, falls back to semantic vector search.
     """
+    # 1. Try authoritative JSON exact batch matching first.
+    clean_batch = _clean_batch(batch_number)
+    if clean_batch:
+        exact_matches = [
+            entry for entry in _load_json_entries()
+            if _clean_batch(entry["batch_number"]) == clean_batch
+        ]
+        if exact_matches:
+            return [{**entry, "distance": 0.0} for entry in exact_matches]
+
     collection = get_collection()
-    
-    # 1. Try exact batch matching first (if batch_number is provided)
-    clean_batch = (batch_number or "").strip().upper()
+
+    # 2. Try exact batch matching against Chroma metadata for older seeded stores.
     if clean_batch:
         try:
-            get_results = collection.get(where={"batch_number": clean_batch})
+            get_results = collection.get(where={"normalized_batch": clean_batch})
             if get_results and get_results["ids"]:
                 matches = []
                 for i in range(len(get_results["ids"])):
@@ -111,6 +160,8 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
                         "batch_number": meta["batch_number"],
                         "aliases": json.loads(meta["aliases"]),
                         "manufacturer": meta["manufacturer"],
+                        "recall_status": meta.get("recall_status", "Recalled"),
+                        "is_recalled": meta.get("is_recalled", True),
                         "recall_date": meta["recall_date"],
                         "recall_reason": meta["recall_reason"],
                         "recalling_agency": meta["recalling_agency"],
@@ -122,7 +173,7 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
         except Exception as e:
             print(f"[vector_store] Error in exact batch match: {e}")
 
-    # 2. Semantic query fallback
+    # 3. Semantic query fallback
     query_parts = []
     if medicine_name:
         query_parts.append(medicine_name)
@@ -147,6 +198,8 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
                 "batch_number": meta["batch_number"],
                 "aliases": json.loads(meta["aliases"]),
                 "manufacturer": meta["manufacturer"],
+                "recall_status": meta.get("recall_status", "Recalled"),
+                "is_recalled": meta.get("is_recalled", True),
                 "recall_date": meta["recall_date"],
                 "recall_reason": meta["recall_reason"],
                 "recalling_agency": meta["recalling_agency"],
