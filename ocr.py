@@ -20,10 +20,22 @@ import cv2
 import numpy as np
 import pytesseract
 from decouple import config
+from google import genai
+from google.genai import types
 from PIL import Image
 
 OCR_ENGINE = config("OCR_ENGINE", default="").lower()
 TESSERACT_CMD = config("TESSERACT_CMD", default="")
+GEMINI_API_KEY = config("GEMINI_API_KEY", default="")
+GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-2.5-flash")
+GEMINI_FALLBACK_MODELS = [
+    model.strip()
+    for model in config(
+        "GEMINI_FALLBACK_MODELS",
+        default="gemini-2.5-flash,gemini-2.5-flash-lite",
+    ).split(",")
+    if model.strip()
+]
 
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
@@ -45,6 +57,7 @@ elif OCR_ENGINE == "tesseract" and not _HAS_TESSERACT:
     OCR_ENGINE = "paddle"
 
 _paddle_ocr_instance = None
+_gemini_client = None
 
 
 def _get_paddle_ocr():
@@ -60,6 +73,40 @@ def _get_paddle_ocr():
             rec_algorithm="SVTR_LCNet",
         )
     return _paddle_ocr_instance
+
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY is not configured")
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
+
+
+def _gemini_models_to_try() -> list[str]:
+    models = []
+    for model in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
+def _generate_with_model_fallback(contents, config):
+    last_error = None
+    for model in _gemini_models_to_try():
+        try:
+            return _get_gemini_client().models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            last_error = e
+            print(f"[ocr] Gemini OCR model {model} failed: {e}")
+            if "503" not in str(e) and "UNAVAILABLE" not in str(e):
+                break
+    raise last_error
 
 
 def _upscale(img: np.ndarray, target_min_dim: int = 1600) -> np.ndarray:
@@ -128,7 +175,7 @@ def _run_paddleocr(variants: dict) -> list[tuple[str, float]]:
     # angle classifier only fixes 180° flips, so also feed a 90°-rotated copy;
     # duplicate lines across passes are deduped by the caller.
     for key in ("color", "color_enhanced"):
-        for rotation in (None, cv2.ROTATE_90_CLOCKWISE):
+        for rotation in (None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE):
             img = variants[key]
             if rotation is not None:
                 img = cv2.rotate(img, rotation)
@@ -213,9 +260,11 @@ def _run_tesseract(variants: dict) -> list[tuple[str, float]]:
         ("sharpened", None, "--oem 3 --psm 11"),
         ("adaptive", None, "--oem 3 --psm 11"),
         ("color", None, "--oem 3 --psm 11"),
-        # Rotated passes for strips photographed with vertical text.
+        # Rotated passes for strips photographed with vertical/upside-down text.
         ("sharpened", cv2.ROTATE_90_CLOCKWISE, "--oem 3 --psm 6"),
         ("sharpened", cv2.ROTATE_90_CLOCKWISE, "--oem 3 --psm 11"),
+        ("sharpened", cv2.ROTATE_180, "--oem 3 --psm 11"),
+        ("sharpened", cv2.ROTATE_90_COUNTERCLOCKWISE, "--oem 3 --psm 11"),
     )
 
     for key, rotation, config in runs:
@@ -248,6 +297,32 @@ def _run_tesseract(variants: dict) -> list[tuple[str, float]]:
     return results
 
 
+def _run_gemini_vision_ocr(image_bytes: bytes, mime_type: str) -> list[tuple[str, float]]:
+    prompt = """Read the text visible on this medicine strip or box.
+Return only the transcribed text, line by line.
+Preserve batch/lot labels, MFG/MFD dates, EXP dates, medicine names, strengths,
+and manufacturer text exactly as much as possible.
+If no readable medicine packaging text is visible, return nothing."""
+
+    response = _generate_with_model_fallback(
+        contents=[
+            prompt,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
+        ],
+        config=types.GenerateContentConfig(
+            max_output_tokens=1200,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+
+    lines = []
+    for line in (response.text or "").splitlines():
+        text = line.strip().strip("-*` ")
+        if text and _is_useful_ocr_line(text):
+            lines.append((text, 0.75))
+    return lines
+
+
 def _ocr_priority(text: str) -> int:
     """Generic ranking: medicine-identifying lines first, then manufacturing /
     regulatory details, then everything else."""
@@ -265,13 +340,13 @@ def _ocr_priority(text: str) -> int:
     return 2
 
 
-def extract_text(image_bytes: bytes) -> dict:
+def extract_text(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
     """
     Runs the full OCR pipeline and returns:
     {
         "raw_text": str,           # merged, deduped text block
         "lines": [(text, confidence), ...],
-        "engine": "tesseract|paddleocr|local|all"
+        "engine": "tesseract|paddleocr|local|all|gemini_vision"
     }
     """
     all_lines: list[tuple[str, float]] = []
@@ -303,10 +378,18 @@ def extract_text(image_bytes: bytes) -> dict:
 
     filtered = sorted(filtered, key=lambda item: (_ocr_priority(item[0]), -item[1]))
 
+    engine = OCR_ENGINE
+    if not filtered:
+        try:
+            filtered = _run_gemini_vision_ocr(image_bytes, mime_type)
+            engine = "gemini_vision"
+        except Exception as e:
+            print(f"[ocr] Gemini Vision OCR fallback failed: {e}")
+
     raw_text = "\n".join(t for t, _ in filtered)
 
     return {
         "raw_text": raw_text,
         "lines": filtered,
-        "engine": OCR_ENGINE,
+        "engine": engine,
     }

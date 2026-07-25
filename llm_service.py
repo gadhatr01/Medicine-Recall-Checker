@@ -13,10 +13,19 @@ from google.genai import types
 from vector_store import search_recalled_db
 
 GEMINI_MODEL = config("GEMINI_MODEL", default="gemini-3.5-flash")
+GEMINI_FALLBACK_MODELS = [
+    model.strip()
+    for model in config(
+        "GEMINI_FALLBACK_MODELS",
+        default="gemini-2.5-flash,gemini-2.5-flash-lite",
+    ).split(",")
+    if model.strip()
+]
 ENABLE_WEB_SEARCH = config("ENABLE_WEB_SEARCH", default=False, cast=bool)
 ENABLE_LLM_IDENTITY = config("ENABLE_LLM_IDENTITY", default=False, cast=bool)
 ENABLE_LLM_SUMMARY = config("ENABLE_LLM_SUMMARY", default=False, cast=bool)
 
+_web_search_available = True
 _client = None
 
 DISCLAIMER = (
@@ -32,6 +41,31 @@ def _get_client():
     if _client is None:
         _client = genai.Client(api_key=config("GEMINI_API_KEY"))
     return _client
+
+
+def _gemini_models_to_try() -> list[str]:
+    models = []
+    for model in [GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
+def _generate_with_model_fallback(contents, config):
+    last_error = None
+    for model in _gemini_models_to_try():
+        try:
+            return _get_client().models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as e:
+            last_error = e
+            print(f"[llm] Gemini model {model} failed: {e}")
+            if "503" not in str(e) and "UNAVAILABLE" not in str(e):
+                break
+    raise last_error
 
 
 def _clean_loose_value(value: str):
@@ -136,6 +170,98 @@ def _is_noise_line(line: str) -> bool:
     return letters < 3 and digits < 3
 
 
+def _normalize_batch_number(batch_number: str) -> str:
+    batch_number = (batch_number or "").upper()
+    return re.sub(r"[^A-Z0-9/-]", "", batch_number)
+
+
+def _looks_like_batch_candidate(value: str) -> bool:
+    value = _normalize_batch_number(value)
+    if not 3 <= len(value) <= 16:
+        return False
+    digit_count = sum(ch.isdigit() for ch in value)
+    if digit_count == 0:
+        return False
+    if len(value) <= 3 and digit_count < 2:
+        return False
+    if value.isdigit() and len(value) < 4:
+        return False
+    rejected = {
+        "400MG",
+        "31UA",
+        "31UA2013",
+        "31/UA",
+        "ML31UA2013",
+        "9330155",
+        "2013",
+        "2024",
+        "2025",
+        "249403",
+        "400013",
+    }
+    if value in rejected:
+        return False
+    date_terms = (
+        "MFG", "MFD", "EXP", "EXPIRY", "DATE",
+        "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    )
+    if any(term in value for term in date_terms):
+        return False
+    if re.search(r"\d+M+G", value):
+        return False
+    if "UA" in value and re.search(r"20\d{2}$", value):
+        return False
+    if value.startswith("ML"):
+        return False
+    if value.startswith(("400013", "249403")):
+        return False
+    if "ENDEX" in value or value.startswith(("BENDEX", "ALBENDAZOLE")):
+        return False
+    return True
+
+
+def _batch_from_unlabeled_stamp(lines: list[str], normalized_text: str) -> str | None:
+    """Some strips stamp the batch immediately before MFG/EXP without a clear
+    Batch/B.No label. Use only tight stamp-neighborhood candidates to avoid
+    picking dosage, license, MRP, or address numbers."""
+    stamp_context = re.compile(
+        r"\b([A-Z]?[A-Z0-9][A-Z0-9./-]{2,15})\s+MFG\.?\s*DATE\b",
+        re.IGNORECASE,
+    )
+    match = stamp_context.search(normalized_text)
+    if match and _looks_like_batch_candidate(match.group(1)):
+        return _normalize_batch_number(match.group(1))
+
+    for idx, line in enumerate(lines):
+        if not re.search(r"\b(MFG|MFD|EXP|EXPIRY)\b", line, re.IGNORECASE):
+            continue
+        candidates = []
+        candidates.extend(re.findall(r"\b[A-Z]?[A-Z0-9][A-Z0-9./-]{2,15}\b", line, re.IGNORECASE))
+        if idx > 0:
+            candidates.extend(re.findall(r"\b[A-Z]?[A-Z0-9][A-Z0-9./-]{2,15}\b", lines[idx - 1], re.IGNORECASE))
+        for candidate in candidates:
+            if _looks_like_batch_candidate(candidate):
+                return _normalize_batch_number(candidate)
+
+    if re.search(r"\b(MFG|MFD|EXP|EXPIRY)\b", normalized_text, re.IGNORECASE):
+        isolated_candidates = []
+        for line in lines:
+            if re.search(r"\b(MFG|MFD|EXP|EXPIRY|ML|M\.L|MRP|RS|MG)\b", line, re.IGNORECASE):
+                continue
+            if "." not in line:
+                continue
+            if not re.fullmatch(r"[A-Z]?[A-Z0-9][A-Z0-9./-]{2,15}", line, re.IGNORECASE):
+                continue
+            if not re.search(r"[A-Z]", line, re.IGNORECASE):
+                continue
+            if _looks_like_batch_candidate(line):
+                isolated_candidates.append(_normalize_batch_number(line))
+        if isolated_candidates:
+            return isolated_candidates[0]
+    return None
+
+
 def _identity_from_ocr_text(raw_ocr_text: str) -> dict:
     lines = [_clean_ocr_line(line) for line in raw_ocr_text.splitlines()]
     lines = [line for line in lines if line and not _is_noise_line(line)]
@@ -152,9 +278,16 @@ def _identity_from_ocr_text(raw_ocr_text: str) -> dict:
     if batch_match:
         start_idx = normalized_lower.find(batch_match.group(1))
         if start_idx != -1:
-            batch_number = normalized_text[start_idx:start_idx+len(batch_match.group(1))].strip()
+            batch_number = _normalize_batch_number(
+                normalized_text[start_idx:start_idx+len(batch_match.group(1))].strip()
+            )
         else:
-            batch_number = batch_match.group(1).upper()
+            batch_number = _normalize_batch_number(batch_match.group(1))
+        if not _looks_like_batch_candidate(batch_number):
+            batch_number = None
+
+    if not batch_number:
+        batch_number = _batch_from_unlabeled_stamp(lines, normalized_text)
 
     # Regex for mfg / expiry dates
     date_pattern = re.compile(
@@ -227,8 +360,7 @@ Return ONLY a JSON object (no markdown fences, no preamble) with this shape:
 }}"""
 
     try:
-        resp = _get_client().models.generate_content(
-            model=GEMINI_MODEL,
+        resp = _generate_with_model_fallback(
             contents=prompt,
             config=types.GenerateContentConfig(
                 max_output_tokens=1000,
@@ -328,8 +460,7 @@ info" section, respond with ONLY a JSON object (no markdown fences):
 }}"""
 
     try:
-        resp = _get_client().models.generate_content(
-            model=GEMINI_MODEL,
+        resp = _generate_with_model_fallback(
             contents=prompt,
             config=types.GenerateContentConfig(
                 max_output_tokens=1000,
@@ -347,6 +478,15 @@ def _answer_without_web_search(identity: dict) -> dict:
     medicine_name = identity.get("brand_name") or identity.get("generic_name") or "Unknown Medicine"
     batch_number = identity.get("batch_number")
 
+    source = "local_database_no_match"
+    general_info = "Checked against local database only. (Live web search is disabled.)"
+    if ENABLE_WEB_SEARCH and not _web_search_available:
+        source = "web_search_unavailable"
+        general_info = (
+            "Checked against local database only because live web search is currently unavailable. "
+            "Please try again later."
+        )
+
     base = {
         "medicine_name": medicine_name,
         "batch_number": batch_number,
@@ -358,8 +498,8 @@ def _answer_without_web_search(identity: dict) -> dict:
         "recall_class": None,
         "recommendation": "No action required. This batch is not listed in the recall database.",
         "status_summary": "Not Flagged: This batch was not found in our recalled-medicines database.",
-        "general_info": "Checked against local database only. (Live web search is disabled.)",
-        "source": "local_database_no_match",
+        "general_info": general_info,
+        "source": source,
     }
 
     if not ENABLE_LLM_SUMMARY or not medicine_name or medicine_name == "Unknown Medicine":
@@ -375,8 +515,7 @@ Using your general pharmacology knowledge, respond with ONLY a JSON object
 }}"""
 
     try:
-        resp = _get_client().models.generate_content(
-            model=GEMINI_MODEL,
+        resp = _generate_with_model_fallback(
             contents=prompt,
             config=types.GenerateContentConfig(
                 max_output_tokens=1000,
@@ -391,6 +530,33 @@ Using your general pharmacology knowledge, respond with ONLY a JSON object
         print(f"[llm] General-info lookup failed: {e}")
 
     return base
+
+
+def _answer_without_batch_number(identity: dict) -> dict:
+    medicine_name = identity.get("brand_name") or identity.get("generic_name") or "Unknown Medicine"
+    return {
+        "medicine_name": medicine_name,
+        "batch_number": None,
+        "manufacturer": identity.get("manufacturer"),
+        "is_recalled": None,
+        "recall_date": None,
+        "recall_reason": None,
+        "recalling_agency": None,
+        "recall_class": None,
+        "recommendation": (
+            "Upload a clearer close-up of the batch/MFG/EXP stamp or type the "
+            "batch number manually, then run the check again."
+        ),
+        "status_summary": (
+            "Batch number was not detected, so this scan could not verify a "
+            "specific medicine batch."
+        ),
+        "general_info": (
+            "OCR may miss purple or embossed batch stamps on reflective foil, "
+            "especially when the photo is rotated, blurred, cropped, or affected by glare."
+        ),
+        "source": "batch_not_detected",
+    }
 
 
 def _answer_from_web_search(identity: dict) -> dict:
@@ -425,8 +591,7 @@ Respond with ONLY a JSON object as your final message (no markdown fences, no ex
   "source": "web_search"
 }}"""
 
-    resp = _get_client().models.generate_content(
-        model=GEMINI_MODEL,
+    resp = _generate_with_model_fallback(
         contents=prompt,
         config=types.GenerateContentConfig(
             max_output_tokens=3000,
@@ -463,6 +628,7 @@ Respond with ONLY a JSON object as your final message (no markdown fences, no ex
 
 def analyze_medicine(raw_ocr_text: str, manual_batch: str = "", manual_med: str = "") -> dict:
     """Full pipeline: identity extraction -> vector DB lookup -> web fallback."""
+    global _web_search_available
     identity = extract_medicine_identity(raw_ocr_text)
     print(f"[llm] Extracted identity: {identity}")
     # Merge manual inputs if provided
@@ -486,6 +652,12 @@ def analyze_medicine(raw_ocr_text: str, manual_batch: str = "", manual_med: str 
     batch = identity.get("batch_number") or ""
     med = identity.get("brand_name") or identity.get("generic_name") or ""
 
+    if not batch:
+        result = _answer_without_batch_number(identity)
+        result["identity"] = identity
+        result["disclaimer"] = DISCLAIMER
+        return result
+
     matches = search_recalled_db(batch_number=batch, medicine_name=med)
 
     recalled_matches = [match for match in matches if match.get("is_recalled") is True]
@@ -494,11 +666,14 @@ def analyze_medicine(raw_ocr_text: str, manual_batch: str = "", manual_med: str 
         result = _answer_from_vector_matches(identity, recalled_matches)
     elif matches:
         result = _answer_from_known_safe_db_match(identity, matches)
-    elif ENABLE_WEB_SEARCH:
+    elif ENABLE_WEB_SEARCH and _web_search_available:
         try:
             result = _answer_from_web_search(identity)
         except Exception as e:
             print(f"[llm] Web search fallback failed: {e}")
+            if "RESOURCE_EXHAUSTED" in str(e) or "quota" in str(e).lower():
+                _web_search_available = False
+                print("[llm] Disabling further web search attempts until restart due to quota limits.")
             result = _answer_without_web_search(identity)
     else:
         result = _answer_without_web_search(identity)

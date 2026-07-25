@@ -3,29 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Verification Result — MediRecall</title>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <title>Verification Result - MediRecall</title>
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
   <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">
-        <span class="brand-icon">
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M10.5 20.5 3.5 13.5a4.95 4.95 0 1 1 7-7l7 7a4.95 4.95 0 1 1-7 7Z"/>
-            <path d="m7 10 7 7"/>
-          </svg>
-        </span>
-        <span class="brand-name">MediRecall</span>
-      </div>
-      <a href="/" class="btn-ghost">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
-        New check
-      </a>
-    </div>
-  </header>
+  <div class="topbar-inner">
 
-  <main class="page">
+    <a href="/" class="btn-ghost">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+           stroke="currentColor" stroke-width="2">
+        <path d="m12 19-7-7 7-7"/>
+        <path d="M19 12H5"/>
+      </svg>
+      New check
+    </a>
+
+
+  </div>
+</header>
+
+  <main class="page result-page">
     {% if error %}
       <div class="result-card error-card">
         <span class="error-icon">
@@ -63,36 +61,38 @@
 
         <section class="result-section">
           <h3>Batch Details Checked</h3>
-          <table style="width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px;">
-            <tr style="border-bottom: 1px solid var(--line);">
-              <td style="padding: 8px 0; font-weight: 600; color: var(--ink-soft); width: 35%;">Batch Number</td>
-              <td style="padding: 8px 0; font-family: monospace; font-weight: 700;">{{ analysis.batch_number or "Not Detected" }}</td>
+          <table class="details-table">
+            <tr>
+              <td>Batch Number</td>
+              <td class="batch-value">{{ analysis.batch_number or "Not Detected" }}</td>
             </tr>
-            <tr style="border-bottom: 1px solid var(--line);">
-              <td style="padding: 8px 0; font-weight: 600; color: var(--ink-soft);">Manufacturer</td>
-              <td style="padding: 8px 0;">{{ analysis.manufacturer or "Not Detected" }}</td>
+            <tr>
+              <td>Manufacturer</td>
+              <td>{{ analysis.manufacturer or "Not Detected" }}</td>
             </tr>
             {% if analysis.identity and (analysis.identity.mfg_date or analysis.identity.expiry_date) %}
               {% if analysis.identity.mfg_date %}
-              <tr style="border-bottom: 1px solid var(--line);">
-                <td style="padding: 8px 0; font-weight: 600; color: var(--ink-soft);">Mfg Date</td>
-                <td style="padding: 8px 0;">{{ analysis.identity.mfg_date }}</td>
+              <tr>
+                <td>Mfg Date</td>
+                <td>{{ analysis.identity.mfg_date }}</td>
               </tr>
               {% endif %}
               {% if analysis.identity.expiry_date %}
-              <tr style="border-bottom: 1px solid var(--line);">
-                <td style="padding: 8px 0; font-weight: 600; color: var(--ink-soft);">Expiry Date</td>
-                <td style="padding: 8px 0;">{{ analysis.identity.expiry_date }}</td>
+              <tr>
+                <td>Expiry Date</td>
+                <td>{{ analysis.identity.expiry_date }}</td>
               </tr>
               {% endif %}
             {% endif %}
             <tr>
-              <td style="padding: 8px 0; font-weight: 600; color: var(--ink-soft);">Verification Source</td>
-              <td style="padding: 8px 0; font-size: 12px; color: var(--primary); font-weight: 600;">
+              <td>Verification Source</td>
+              <td class="source-value">
                 {% if analysis.source == "internal_database" %}
                   Internal Database Match
                 {% elif analysis.source == "web_search" %}
                   Live Web Search Grounding
+                {% elif analysis.source == "batch_not_detected" %}
+                  Batch Not Detected
                 {% else %}
                   Internal Database (No Match Found)
                 {% endif %}
@@ -120,6 +120,11 @@
           <section class="result-section" style="margin-top: 20px;">
             <h3>Summary</h3>
             <p style="line-height: 1.6;">{{ analysis.status_summary }}</p>
+            {% if analysis.source == "batch_not_detected" and analysis.recommendation %}
+              <div style="background: var(--warn-bg); border-left: 4px solid var(--warn-ink); border-radius: 4px; padding: 12px; margin-top: 14px; color: var(--warn-ink);">
+                <strong>What to do next:</strong> {{ analysis.recommendation }}
+              </div>
+            {% endif %}
             {% if analysis.general_info %}
               <p style="margin-top: 10px; font-size: 14px; color: var(--ink-soft); line-height: 1.6;">{{ analysis.general_info }}</p>
             {% endif %}

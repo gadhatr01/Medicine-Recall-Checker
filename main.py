@@ -46,13 +46,15 @@ async def analyze(
     manual_batch: str = Form(default=""),
 ):
     ocr_result = {"raw_text": "", "lines": [], "engine": "none"}
+    uploaded_image_received = False
     
     if image and image.filename:
         if image.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(400, "Unsupported file type. Upload JPEG, PNG, or WEBP.")
         image_bytes = await image.read()
         if image_bytes:
-            ocr_result = extract_text(image_bytes)
+            uploaded_image_received = True
+            ocr_result = extract_text(image_bytes, image.content_type)
 
     manual_text = manual_text.strip()
     manual_batch = manual_batch.strip()
@@ -63,7 +65,7 @@ async def analyze(
 
     print(f"[analyze] OCR result: {ocr_result['raw_text']}... Manual Batch: {manual_batch}")
 
-    if not ocr_result["raw_text"].strip() and not manual_batch:
+    if not uploaded_image_received and not ocr_result["raw_text"].strip() and not manual_batch:
         return templates.TemplateResponse(
             "result.html",
             {
@@ -96,12 +98,15 @@ async def analyze_api(
 ):
     """JSON API equivalent of /analyze, for programmatic / non-template use."""
     ocr_result = {"raw_text": "", "lines": [], "engine": "none"}
+    uploaded_image_received = False
     
     if image and image.filename:
         if image.content_type not in ALLOWED_CONTENT_TYPES:
             raise HTTPException(400, "Unsupported file type. Upload JPEG, PNG, or WEBP.")
         image_bytes = await image.read()
-        ocr_result = extract_text(image_bytes)
+        if image_bytes:
+            uploaded_image_received = True
+            ocr_result = extract_text(image_bytes, image.content_type)
 
     manual_text = manual_text.strip()
     manual_batch = manual_batch.strip()
@@ -109,7 +114,7 @@ async def analyze_api(
     if manual_text:
         ocr_result["raw_text"] = f"{manual_text}\n{ocr_result['raw_text']}".strip()
 
-    if not ocr_result["raw_text"].strip() and not manual_batch:
+    if not uploaded_image_received and not ocr_result["raw_text"].strip() and not manual_batch:
         return JSONResponse({"error": "No input provided."}, status_code=422)
 
     analysis = analyze_medicine(
