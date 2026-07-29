@@ -38,6 +38,7 @@ DISCLAIMER = (
 
 def _get_client():
     global _client
+    print(f"API KEY: {config('GEMINI_API_KEY')}")
     if _client is None:
         _client = genai.Client(api_key=config("GEMINI_API_KEY"))
     return _client
@@ -383,19 +384,36 @@ def _answer_from_best_db_match(identity: dict, matches: list[dict]) -> dict:
         or "Unknown Medicine"
     )
     batch_number = best_match.get("batch_number") or identity.get("batch_number")
+    recall_date = best_match.get("recall_date")
+    agency = best_match.get("recalling_agency")
+    reason = best_match.get("recall_reason")
+    status_label = best_match.get("recall_status") or "Recalled"
+
+    date_phrase = f" reported in {recall_date}" if recall_date else ""
+    agency_phrase = f" by {agency}" if agency else ""
 
     return {
         "medicine_name": medicine_name,
         "batch_number": batch_number,
         "manufacturer": best_match.get("manufacturer") or identity.get("manufacturer"),
         "is_recalled": True,
-        "recall_date": best_match.get("recall_date"),
-        "recall_reason": best_match.get("recall_reason"),
-        "recalling_agency": best_match.get("recalling_agency"),
+        "recall_date": recall_date,
+        "recall_reason": reason,
+        "recalling_agency": agency,
         "recall_class": best_match.get("recall_class"),
         "recommendation": best_match.get("recommendation"),
-        "status_summary": f"RECALLED: Batch {batch_number} of {medicine_name} was recalled on {best_match.get('recall_date')} by {best_match.get('recalling_agency')} due to: {best_match.get('recall_reason')}",
-        "general_info": f"This batch was manufactured by {best_match.get('manufacturer')}. Recall classification: {best_match.get('recall_class')}.",
+        "mfg_date": best_match.get("mfg_date"),
+        "expiry_date": best_match.get("expiry_date"),
+        "reporting_source": best_match.get("reporting_source"),
+        "reporting_lab": best_match.get("reporting_lab"),
+        "status_summary": (
+            f"{status_label.upper()}: Batch {batch_number} of {medicine_name} "
+            f"was flagged{date_phrase}{agency_phrase}. Reason: {reason}"
+        ),
+        "general_info": (
+            f"This batch was manufactured by {best_match.get('manufacturer')}. "
+            f"Classification: {best_match.get('recall_class') or status_label}."
+        ),
         "source": "internal_database",
     }
 

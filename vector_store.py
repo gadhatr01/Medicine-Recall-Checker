@@ -4,8 +4,10 @@ Seeded once from data/recalled_batches.json. Used as the first lookup layer
 before falling back to a live web search via the LLM.
 """
 
+import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import chromadb
@@ -17,6 +19,7 @@ CHROMA_DIR = config("CHROMA_DIR", default="./chroma_db")
 DATA_FILE = Path(__file__).parent / "data" / "recalled_batches.json"
 COLLECTION_NAME = "recalled_batches"
 MATCH_THRESHOLD = config("VECTOR_MATCH_THRESHOLD", default=0.35, cast=float)
+DATASET_HASH_KEY = "dataset_sha256"
 
 _client = None
 _collection = None
@@ -40,38 +43,118 @@ def _doc_text(entry: dict) -> str:
     return (
         f"{entry['medicine_name']} ({', '.join(entry['aliases'])}) - "
         f"Batch: {entry['batch_number']}, Manufacturer: {entry['manufacturer']}. "
-        f"Recall Status: {entry['recall_status']}. Recall Reason: {entry['recall_reason']}"
+        f"Status: {entry['recall_status']}. Reason: {entry['recall_reason']}. "
+        f"Reporting agency: {entry['recalling_agency']}"
     )
 
 
 def _clean_batch(batch_number: str) -> str:
-    return re.sub(r"[^A-Z0-9]", "", (batch_number or "").upper())
+    return re.sub(r"[^A-Z0-9]", "", str(batch_number or "").upper())
+
+
+def _clean_optional(value):
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def _format_dataset_date(value):
+    value = _clean_optional(value)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return parsed.date().isoformat()
+
+
+def _format_reporting_month(value):
+    value = _clean_optional(value)
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return parsed.strftime("%B %Y")
+
+
+def _data_file_hash() -> str:
+    return hashlib.sha256(DATA_FILE.read_bytes()).hexdigest()
+
+
+def _is_nsq_entry(entry: dict) -> bool:
+    return "Name of Product" in entry or "NSQ Result" in entry or "Batch No" in entry
 
 
 def _normalize_entry(entry: dict) -> dict:
+    if _is_nsq_entry(entry):
+        product_name = _clean_optional(entry.get("Name of Product")) or ""
+        batch_number = _clean_optional(entry.get("Batch No")) or ""
+        manufacturer = _clean_optional(entry.get("Manufactured By")) or ""
+        nsq_result = _clean_optional(entry.get("NSQ Result")) or "Not of standard quality"
+        reporting_source = _clean_optional(entry.get("Reporting Source"))
+        reporting_lab = _clean_optional(entry.get("Reporting by Lab/State"))
+        reporting_month = _format_reporting_month(entry.get("Reporting Month & Year"))
+        mfg_date = _format_dataset_date(entry.get("Manufacturing Date"))
+        expiry_date = _format_dataset_date(entry.get("Expiry Date"))
+        reporting_parts = [part for part in (reporting_source, reporting_lab) if part]
+
+        return {
+            "medicine_name": product_name,
+            "batch_number": batch_number,
+            "aliases": [product_name],
+            "manufacturer": manufacturer,
+            "recall_status": "NSQ / Recalled",
+            "is_recalled": True,
+            "recall_date": reporting_month,
+            "recall_reason": nsq_result,
+            "recalling_agency": " - ".join(reporting_parts) or "NESQ Dataset",
+            "recall_class": "NSQ (Not of Standard Quality)",
+            "recommendation": (
+                "Do not use this batch until it has been verified by a pharmacist, "
+                "healthcare professional, or the relevant drug control authority."
+            ),
+            "mfg_date": mfg_date,
+            "expiry_date": expiry_date,
+            "reporting_source": reporting_source,
+            "reporting_lab": reporting_lab,
+            "record_id": _clean_optional(entry.get("S.No")),
+        }
+
     recall_status = entry.get("recall_status") or (
         "Recalled" if entry.get("is_recalled") else "Not Recalled"
     )
-    is_recalled = str(recall_status).strip().lower() == "recalled"
+    is_recalled = bool(entry.get("is_recalled")) or str(recall_status).strip().lower() in {
+        "recalled",
+        "nsq / recalled",
+    }
     aliases = entry.get("aliases") or [entry.get("generic_name"), entry.get("composition")]
 
     return {
-        "medicine_name": entry.get("medicine_name", ""),
-        "batch_number": entry.get("batch_number") or entry.get("batch_no") or "",
+        "medicine_name": _clean_optional(entry.get("medicine_name")) or "",
+        "batch_number": _clean_optional(entry.get("batch_number") or entry.get("batch_no")) or "",
         "aliases": [alias for alias in aliases if alias],
-        "manufacturer": entry.get("manufacturer", ""),
+        "manufacturer": _clean_optional(entry.get("manufacturer")) or "",
         "recall_status": recall_status,
         "is_recalled": is_recalled,
-        "recall_date": entry.get("recall_date") or None,
-        "recall_reason": entry.get("recall_reason") or None,
-        "recalling_agency": entry.get("recalling_agency") or "Internal Database",
-        "recall_class": entry.get("recall_class") or None,
+        "recall_date": _clean_optional(entry.get("recall_date")),
+        "recall_reason": _clean_optional(entry.get("recall_reason")),
+        "recalling_agency": _clean_optional(entry.get("recalling_agency")) or "Internal Database",
+        "recall_class": _clean_optional(entry.get("recall_class")),
         "recommendation": entry.get("recommendation")
         or (
             "Do not use this batch. Contact a pharmacist or healthcare professional."
             if is_recalled
             else "No recall action required based on the internal database."
         ),
+        "mfg_date": _format_dataset_date(entry.get("mfg_date") or entry.get("manufacturing_date")),
+        "expiry_date": _format_dataset_date(entry.get("expiry_date")),
+        "reporting_source": None,
+        "reporting_lab": None,
+        "record_id": _clean_optional(entry.get("id") or entry.get("record_id")),
     }
 
 
@@ -81,22 +164,42 @@ def _load_json_entries() -> list[dict]:
 
 
 def init_vector_store(force_reseed: bool = False):
-    """Creates the collection and seeds it from recalled_batches.json if empty."""
+    """Creates the collection and seeds it from recalled_batches.json when needed."""
     global _collection
     client = _get_client()
-    
+
     if force_reseed:
         try:
             client.delete_collection(COLLECTION_NAME)
         except Exception:
             pass
 
+    dataset_hash = _data_file_hash()
     _collection = client.get_or_create_collection(
-        name=COLLECTION_NAME, embedding_function=_embedder
+        name=COLLECTION_NAME,
+        embedding_function=_embedder,
+        metadata={DATASET_HASH_KEY: dataset_hash},
     )
 
-    if _collection.count() == 0:
-        entries = _load_json_entries()
+    entries = _load_json_entries()
+    collection_hash = (_collection.metadata or {}).get(DATASET_HASH_KEY)
+    should_seed = (
+        _collection.count() == 0
+        or _collection.count() != len(entries)
+        or collection_hash != dataset_hash
+    )
+
+    if should_seed:
+        try:
+            client.delete_collection(COLLECTION_NAME)
+        except Exception:
+            pass
+
+        _collection = client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=_embedder,
+            metadata={DATASET_HASH_KEY: dataset_hash},
+        )
 
         _collection.add(
             ids=[str(i) for i in range(len(entries))],
@@ -115,6 +218,11 @@ def init_vector_store(force_reseed: bool = False):
                     "recalling_agency": e["recalling_agency"],
                     "recall_class": e["recall_class"] or "",
                     "recommendation": e["recommendation"],
+                    "mfg_date": e["mfg_date"] or "",
+                    "expiry_date": e["expiry_date"] or "",
+                    "reporting_source": e["reporting_source"] or "",
+                    "reporting_lab": e["reporting_lab"] or "",
+                    "record_id": e["record_id"] or "",
                 }
                 for e in entries
             ],
@@ -167,6 +275,11 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
                         "recalling_agency": meta["recalling_agency"],
                         "recall_class": meta["recall_class"],
                         "recommendation": meta["recommendation"],
+                        "mfg_date": meta.get("mfg_date", ""),
+                        "expiry_date": meta.get("expiry_date", ""),
+                        "reporting_source": meta.get("reporting_source", ""),
+                        "reporting_lab": meta.get("reporting_lab", ""),
+                        "record_id": meta.get("record_id", ""),
                         "distance": 0.0  # Exact match
                     })
                 return matches
@@ -205,6 +318,11 @@ def search_recalled_db(batch_number: str, medicine_name: str = "", top_k: int = 
                 "recalling_agency": meta["recalling_agency"],
                 "recall_class": meta["recall_class"],
                 "recommendation": meta["recommendation"],
+                "mfg_date": meta.get("mfg_date", ""),
+                "expiry_date": meta.get("expiry_date", ""),
+                "reporting_source": meta.get("reporting_source", ""),
+                "reporting_lab": meta.get("reporting_lab", ""),
+                "record_id": meta.get("record_id", ""),
                 "distance": distance,
             })
     return matches

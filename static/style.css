@@ -164,6 +164,27 @@ body {
   background: var(--primary-soft);
 }
 
+.upload-card.is-submitting .mobile-upload-btn {
+  pointer-events: none;
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.upload-card.is-submitting .dropzone {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.preview-remove.is-disabled {
+  opacity: 0.62;
+  color: var(--ink-soft);
+  cursor: not-allowed !important;
+}
+
+.preview-remove.is-disabled:hover {
+  background: var(--surface);
+}
+
 .dz-icon {
   display: inline-grid;
   place-items: center;

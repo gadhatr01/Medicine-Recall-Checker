@@ -136,6 +136,7 @@
     const form = document.getElementById('analyze-form');
     const submitBtn = document.getElementById('submit-btn');
     let cameraFile = null;
+    let isSubmitting = false;
 
     function setMainImageFile(file) {
       if (!file) return false;
@@ -159,12 +160,14 @@
     }
 
     input.addEventListener('change', () => {
+      if (isSubmitting) return;
       cameraFile = null;
       cameraInput.value = '';
       showPreview(input.files[0]);
     });
 
     cameraInput.addEventListener('change', () => {
+      if (isSubmitting) return;
       cameraFile = cameraInput.files[0] || null;
       if (cameraFile) {
         setMainImageFile(cameraFile);
@@ -173,12 +176,24 @@
     });
 
     ['dragenter', 'dragover'].forEach(evt =>
-      dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag-over'); })
+      dropzone.addEventListener(evt, e => {
+        e.preventDefault();
+        if (!isSubmitting) {
+          dropzone.classList.add('drag-over');
+        }
+      })
     );
     ['dragleave', 'drop'].forEach(evt =>
       dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag-over'); })
     );
+    dropzone.addEventListener('click', e => {
+      if (isSubmitting) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
     dropzone.addEventListener('drop', e => {
+      if (isSubmitting) return;
       const file = e.dataTransfer.files[0];
       if (file && file.type.startsWith('image/')) {
         const dt = new DataTransfer();
@@ -192,11 +207,13 @@
 
     removeBtn.addEventListener('click', e => {
       e.preventDefault();
+      if (isSubmitting) return;
       input.value = '';
       cameraFile = null;
       cameraInput.value = '';
       preview.hidden = true;
       idle.hidden = false;
+      input.click();
     });
 
     form.addEventListener('formdata', e => {
@@ -206,9 +223,15 @@
     });
 
     form.addEventListener('submit', () => {
+      isSubmitting = true;
       if (cameraFile) {
         setMainImageFile(cameraFile);
       }
+      form.classList.add('is-submitting');
+      dropzone.classList.remove('drag-over');
+      removeBtn.classList.add('is-disabled');
+      removeBtn.setAttribute('aria-disabled', 'true');
+      removeBtn.tabIndex = -1;
       submitBtn.disabled = true;
       submitBtn.querySelector('.btn-label').hidden = true;
       submitBtn.querySelector('.btn-loading').hidden = false;
