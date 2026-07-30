@@ -107,7 +107,7 @@ def _normalize_entry(entry: dict) -> dict:
             "batch_number": batch_number,
             "aliases": [product_name],
             "manufacturer": manufacturer,
-            "recall_status": "NSQ / Recalled",
+            "recall_status": "NESQ",
             "is_recalled": True,
             "recall_date": reporting_month,
             "recall_reason": nsq_result,
@@ -125,10 +125,11 @@ def _normalize_entry(entry: dict) -> dict:
         }
 
     recall_status = entry.get("recall_status") or (
-        "Recalled" if entry.get("is_recalled") else "Not Recalled"
+        "NESQ" if entry.get("is_recalled") else "Not in NESQ"
     )
     is_recalled = bool(entry.get("is_recalled")) or str(recall_status).strip().lower() in {
         "recalled",
+        "nesq",
         "nsq / recalled",
     }
     aliases = entry.get("aliases") or [entry.get("generic_name"), entry.get("composition")]
