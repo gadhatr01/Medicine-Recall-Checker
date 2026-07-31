@@ -44,7 +44,7 @@
           {% if analysis.is_recalled %}
             <span class="badge recalled" style="background: var(--bad-bg); color: var(--bad-ink); font-weight: 700;">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-              NESQ
+              NSQ
             </span>
           {% elif analysis.is_recalled is none %}
             <span class="badge unknown" style="background: var(--warn-bg); color: var(--warn-ink); font-weight: 700;">
@@ -54,7 +54,7 @@
           {% else %}
             <span class="badge ok" style="background: var(--ok-bg); color: var(--ok-ink); font-weight: 700;">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px;"><polyline points="20 6 9 17 4 12"/></svg>
-              NOT IN NESQ
+              NOT IN NSQ
             </span>
           {% endif %}
         </div>

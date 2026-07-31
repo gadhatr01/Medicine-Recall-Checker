@@ -387,9 +387,9 @@ def _answer_from_best_db_match(identity: dict, matches: list[dict]) -> dict:
     recall_date = best_match.get("recall_date")
     agency = best_match.get("recalling_agency")
     reason = best_match.get("recall_reason")
-    status_label = best_match.get("recall_status") or "NESQ"
+    status_label = best_match.get("recall_status") or "NSQ"
     if str(status_label).strip().lower() in {"recalled", "nsq / recalled"}:
-        status_label = "NESQ"
+        status_label = "NSQ"
 
     date_phrase = f" reported in {recall_date}" if recall_date else ""
     agency_phrase = f" by {agency}" if agency else ""
@@ -410,7 +410,7 @@ def _answer_from_best_db_match(identity: dict, matches: list[dict]) -> dict:
         "reporting_lab": best_match.get("reporting_lab"),
         "status_summary": (
             f"{status_label.upper()}: Batch {batch_number} of {medicine_name} "
-            f"is in NESQ{date_phrase}{agency_phrase}. Reason: {reason}"
+            f"is in NSQ{date_phrase}{agency_phrase}. Reason: {reason}"
         ),
         "general_info": (
             f"This batch was manufactured by {best_match.get('manufacturer')}. "
@@ -442,8 +442,8 @@ def _answer_from_known_safe_db_match(identity: dict, matches: list[dict]) -> dic
         "recommendation": best_match.get("recommendation")
         or "No recall action required based on the internal database.",
         "status_summary": (
-            f"Not in NESQ: Batch {batch_number} of {medicine_name} was found in "
-            "the internal database and is marked Not in NESQ."
+            f"Not in NSQ: Batch {batch_number} of {medicine_name} was found in "
+            "the internal database and is marked Not in NSQ."
         ),
         "general_info": (
             f"This batch is listed for {best_match.get('manufacturer')}. "
@@ -516,8 +516,8 @@ def _answer_without_web_search(identity: dict) -> dict:
         "recall_reason": None,
         "recalling_agency": None,
         "recall_class": None,
-        "recommendation": "No action required. This batch is not listed in the NESQ database.",
-        "status_summary": "Not in NESQ: This batch was not found in our NESQ database.",
+        "recommendation": "No action required. This batch is not listed in the NSQ database.",
+        "status_summary": "Not in NSQ: This batch was not found in our NSQ database.",
         "general_info": general_info,
         "source": source,
     }
